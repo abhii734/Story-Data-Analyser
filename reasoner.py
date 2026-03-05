@@ -27,7 +27,7 @@ class Reasoner:
         except Exception as e:
             print(f"Error saving cache: {e}")
 
-    def retrieve_context(self, query, book_text, limit=15):
+    def retrieve_context(self, query, book_text, limit=10):
         """
         Hybrid context retrieval: 
         Combination of Semantic Search (Embeddings) and Entity/Keyword matching.

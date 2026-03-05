@@ -45,12 +45,19 @@ class BackstoryConsistencyChecker:
                         self.model = genai.GenerativeModel('models/gemini-2.5-flash')
                         
                     def complete(self, prompt):
-                        try:
-                            response = self.model.generate_content(prompt)
-                            return response.text
-                        except Exception as e:
-                            print(f"[Gemini Error]: {e}")
-                            return ""
+                        import time
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                response = self.model.generate_content(prompt)
+                                return response.text
+                            except Exception as e:
+                                if "429" in str(e) and attempt < max_retries - 1:
+                                    print(f"Rate limited. Waiting 60s (Attempt {attempt+1}/{max_retries})...")
+                                    time.sleep(65)
+                                    continue
+                                print(f"[Gemini Error]: {e}")
+                                return ""
 
                 self.llm = GeminiAdapter()
                 return True
@@ -87,6 +94,10 @@ class BackstoryConsistencyChecker:
         self.initialize_llm()
         self.reasoner = Reasoner(self.llm)
         
+        # Pre-load embedding model
+        # print("Pre-loading embedding model...")
+        # self.reasoner.retrieve_context("warmup", "The quick brown fox jumps over the lazy dog.")
+        
         # 3. Process Test Cases
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -111,8 +122,8 @@ class BackstoryConsistencyChecker:
             print(f"[{i+1}/{total_cnt}] Evaluating ID {row_id} (Book: {book_name})...")
             
             try:
-                # Basic rate limiting per thread
-                time.sleep(1) 
+                # Basic rate limiting per thread - stayed at 5s for single worker
+                time.sleep(5) 
                 
                 prediction, rationale = self.reasoner.evaluate_row(
                     row, 
@@ -127,7 +138,7 @@ class BackstoryConsistencyChecker:
         total = len(test_data)
         tasks = [(i, row, total) for i, row in enumerate(test_data)]
         
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             # We map the function to the tasks
             futures = [executor.submit(process_row, t) for t in tasks]
             
