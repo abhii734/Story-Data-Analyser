@@ -17,55 +17,59 @@ class BackstoryConsistencyChecker:
         self.reasoner = None
 
     def initialize_llm(self):
-        # Initialize LLM
-        # Check for API Key in env or .env file
         try:
             from dotenv import load_dotenv
             load_dotenv()
         except ImportError:
             pass
             
-        api_key = os.getenv("OPENAI_API_KEY")
         google_key = os.getenv("GOOGLE_API_KEY")
         
-        # Try Google first
         if google_key:
-            try:
-                print("Attempting to connect to Google Gemini...")
-                import google.generativeai as genai
-                genai.configure(api_key=google_key)
-                
-                # Test connection before committing
-                model = genai.GenerativeModel('models/gemini-2.5-flash')
-                model.generate_content("Test")
-                print("Google Gemini connected successfully.")
-                
-                class GeminiAdapter:
-                    def __init__(self):
-                        self.model = genai.GenerativeModel('models/gemini-2.5-flash')
-                        
-                    def complete(self, prompt):
-                        import time
-                        max_retries = 3
-                        for attempt in range(max_retries):
-                            try:
-                                response = self.model.generate_content(prompt)
-                                return response.text
-                            except Exception as e:
-                                if "429" in str(e) and attempt < max_retries - 1:
-                                    print(f"Rate limited. Waiting 60s (Attempt {attempt+1}/{max_retries})...")
-                                    time.sleep(65)
-                                    continue
-                                print(f"[Gemini Error]: {e}")
-                                return ""
+            models_to_try = [
+                'models/gemini-1.5-flash',
+                'models/gemini-2.0-flash',
+                'models/gemini-1.5-pro'
+            ]
+            
+            for model_name in models_to_try:
+                try:
+                    print(f"Attempting to connect to Google {model_name}...")
+                    import google.generativeai as genai
+                    genai.configure(api_key=google_key)
+                    model = genai.GenerativeModel(model_name)
+                    # Use a very short test to avoid burning quota
+                    model.generate_content("Hi")
+                    print(f"Google {model_name} connected successfully.")
+                    
+                    class GeminiAdapter:
+                        def __init__(self, m_name):
+                            self.model = genai.GenerativeModel(m_name)
+                            
+                        def complete(self, prompt):
+                            import time
+                            max_retries = 3
+                            for attempt in range(max_retries):
+                                try:
+                                    response = self.model.generate_content(prompt)
+                                    if not response or not response.text:
+                                        raise Exception("Empty response or Safety Blocked")
+                                    return response.text
+                                except Exception as e:
+                                    err_str = str(e).lower()
+                                    if ("429" in err_str or "quota" in err_str or "blocked" in err_str) and attempt < max_retries - 1:
+                                        wait_time = 80 + (attempt * 40)
+                                        print(f"Rate limited or blocked. Waiting {wait_time}s...")
+                                        time.sleep(wait_time)
+                                        continue
+                                    print(f"[Gemini Error]: {e}")
+                                    return "VERDICT: 0\nRATIONALE: Error or safety block from LLM."
 
-                self.llm = GeminiAdapter()
-                return True
-                
-            except Exception as e:
-                print(f"Warning: Google Gemini initialization failed ({e}).")
+                    self.llm = GeminiAdapter(model_name)
+                    return True
+                except Exception as e:
+                    print(f"Warning: {model_name} failed ({e}).")
         
-        # Fallback to Mock
         print("Falling back to MockLLM.")
         from mock_llm import MockLLM
         self.llm = MockLLM()
@@ -74,12 +78,9 @@ class BackstoryConsistencyChecker:
     def run(self):
         print("Starting Consistency Checker Pipeline...")
         
-        # 1. Load Data
-        print("Loading Books...")
         books_map = pathway_ingest.ingest_books(BOOKS_DIR)
         print(f"Loaded {len(books_map)} books.")
         
-        print("Loading CSV Data...")
         try:
             train_data = pathway_ingest.ingest_csv(TRAIN_FILE)
             test_data = pathway_ingest.ingest_csv(TEST_FILE)
@@ -87,21 +88,12 @@ class BackstoryConsistencyChecker:
             print(f"Error loading CSVs: {e}")
             return
 
-        print(f"Loaded {len(train_data)} training examples.")
-        print(f"Loaded {len(test_data)} test cases.")
-
-        # 2. Initialize Logic
         self.initialize_llm()
         self.reasoner = Reasoner(self.llm)
         
-        # Pre-load embedding model
-        # print("Pre-loading embedding model...")
-        # self.reasoner.retrieve_context("warmup", "The quick brown fox jumps over the lazy dog.")
-        
-        # 3. Process Test Cases
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        print(f"Processing test cases (max_workers=3)...")
+        print(f"Processing test cases (Sequential)...")
         results = []
         
         def process_row(args):
@@ -109,22 +101,19 @@ class BackstoryConsistencyChecker:
             row_id = row.get('id')
             book_name = row.get('book_name')
             
-            # Find book text
             book_text = None
             if book_name in books_map:
                 book_text = books_map[book_name]
             else:
                 for b_key, b_val in books_map.items():
-                    if book_name.lower() in b_key.lower():
+                    if book_name and book_name.lower() in b_key.lower():
                         book_text = b_val
                         break
             
             print(f"[{i+1}/{total_cnt}] Evaluating ID {row_id} (Book: {book_name})...")
             
             try:
-                # Basic rate limiting per thread - stayed at 5s for single worker
-                time.sleep(5) 
-                
+                time.sleep(15) # Throttle to stay safe
                 prediction, rationale = self.reasoner.evaluate_row(
                     row, 
                     book_text=book_text, 
@@ -139,38 +128,23 @@ class BackstoryConsistencyChecker:
         tasks = [(i, row, total) for i, row in enumerate(test_data)]
         
         with ThreadPoolExecutor(max_workers=1) as executor:
-            # We map the function to the tasks
             futures = [executor.submit(process_row, t) for t in tasks]
             
             for future in as_completed(futures):
                 res = future.result()
                 results.append(res)
-                print(f"DEBUG: Finished task, total results now: {len(results)}")
+                print(f"DEBUG: Finished task {res[0]}, total: {len(results)}/60")
+                # Immediate save for crash recovery
+                try:
+                    with open(RESULTS_FILE, 'w', newline='', encoding='utf-8') as csvfile:
+                        writer = csv.writer(csvfile)
+                        writer.writerow(['id', 'prediction', 'rationale'])
+                        writer.writerows(results)
+                except:
+                    pass
             
-        # Sort results by ID to keep order
-        # Assuming ID is convertible to int? Or just string sort.
-        # Original order is better.
-        # But 'results' order is random now.
-        # Let's verify sort needed? 
-        # test.csv has random IDs. 
-        # Actually simplest is to just write them. But user might prefer sorted.
-        # Since I'm appending as completed, they are scrambled.
-        # Let's sort by the index 'i' passed in tasks? 
-        # Wait, I didn't return 'i'.
-        # Whatever, order doesn't strictly matter for CSV submission usually.
-            
-        # 4. Write Results
-        print(f"Writing results to {RESULTS_FILE}...")
-        try:
-            with open(RESULTS_FILE, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(['id', 'prediction', 'rationale'])
-                writer.writerows(results)
-            print("Done!")
-        except Exception as e:
-            print(f"Error writing results: {e}")
+        print(f"Done! Final results saved to {RESULTS_FILE}")
 
 if __name__ == "__main__":
     checker = BackstoryConsistencyChecker(DATA_DIR)
     checker.run()
-

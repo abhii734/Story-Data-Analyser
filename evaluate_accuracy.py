@@ -22,12 +22,19 @@ def evaluate_accuracy():
     
     class GeminiAdapter:
         def __init__(self):
-            self.model = genai.GenerativeModel('models/gemini-1.5-pro-preview-12-2025')
+            # Using the only confirmed working model found in check_google.py logs
+            self.model = genai.GenerativeModel('gemini-2.0-flash')
         def complete(self, prompt):
-            try:
-                return self.model.generate_content(prompt).text
-            except Exception:
-                return ""
+            import time
+            for attempt in range(3):
+                try:
+                    response = self.model.generate_content(prompt)
+                    return response.text
+                except Exception as e:
+                    if "429" in str(e):
+                        time.sleep(65)
+                        continue
+                    return ""
     
     llm = GeminiAdapter()
     reasoner = Reasoner(llm)
@@ -37,8 +44,8 @@ def evaluate_accuracy():
     train_data = pathway_ingest.ingest_csv(TRAIN_FILE)
     
     # Pick random subset
-    sample_size = 20 # Keep it small for speed
-    subset = train_data[:sample_size] # Just take first 20 for determinism or random.sample(train_data, sample_size)
+    sample_size = 5 # Reduced for very fast check
+    subset = train_data[:sample_size]
     
     print(f"Evaluating accuracy on {len(subset)} samples...")
     

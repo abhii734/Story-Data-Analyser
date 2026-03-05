@@ -27,7 +27,7 @@ class Reasoner:
         except Exception as e:
             print(f"Error saving cache: {e}")
 
-    def retrieve_context(self, query, book_text, limit=10):
+    def retrieve_context(self, query, book_text, limit=6):
         """
         Hybrid context retrieval: 
         Combination of Semantic Search (Embeddings) and Entity/Keyword matching.
@@ -130,82 +130,47 @@ class Reasoner:
     def evaluate_row(self, row, book_text=None, examples=[]):
         """
         Evaluates a single row from the test set.
-        row: dict with keys 'book_name', 'char', 'content'
-        book_text: full text of the book (optional)
-        examples: list of dicts from train set for few-shot
         """
         book_name = row.get('book_name', 'Unknown Book')
         character = row.get('char', 'Unknown Character')
         content = row.get('content', '')
         
-        # 1. Retrieve Context
+        # 1. Retrieve Context - Ensure we don't send too much
         context_chunks = self.retrieve_context(content, book_text)
-        context_str = "\n---\n".join(context_chunks) if context_chunks else "No specific book text content available. Use internal knowledge."
+        context_str = "\n---\n".join(context_chunks) if context_chunks else "No specific book text content found."
 
-        # 2. Select Few-Shot Examples (Prioritize same book)
-        same_book_examples = [ex for ex in examples if ex.get('book_name') == book_name]
-        other_examples = [ex for ex in examples if ex.get('book_name') != book_name]
-        
-        # Take up to 3 examples
-        selected_examples = same_book_examples[:2]
-        if len(selected_examples) < 3:
-            selected_examples.extend(other_examples[:3 - len(selected_examples)])
-            
-        examples_str = ""
-        for ex in selected_examples:
-            lbl = ex.get('label', 'unknown')
-            val = 1 if lbl.lower() == 'consistent' else 0
-            examples_str += f"Claim: {ex.get('content')}\nVerdict: {val}\nReasoning: (Example)\n\n"
-
-        # 3. Construct Chain-of-Thought Prompt
+        # 2. Simplified prompt to reduce token count
         prompt = f"""
-        You are a STRICT LITERARY JUDGE. Your job is to penalize inconsistencies.
-        Target Book: {book_name}
-        Character: {character}
-        
-        Task: Verify if the Claim is CONSISTENT (1) or CONTRADICTORY (0) with the provided Book Context.
-        
+        Book: {book_name} | Character: {character}
         Claim: "{content}"
         
-        Evidence (Retrieved Context):
+        Context Evidence:
         {context_str}
         
-        JUDGING RULES:
-        1. **Direct Contradiction**: If the book says X and the claim says Y (e.g., different dates, different killers, different locations for same event), the Verdict must be 0.
-        2. **Timeline Conflict**: If the claim places an event in a time period where it is impossible based on the book, Verdict 0.
-        3. **Characterization Conflict**: If the claim describes an action completely out of character (e.g., a pacifist committing murder without reason), Verdict 0.
-        4. **Silence is Consistency**: If the book does NOT mention the events in the claim, and they don't contradict known facts, assume they happened "off-screen". Verdict 1.
+        Task: Is the claim CONSISTENT (1) or CONTRADICTORY (0) with the book?
+        Consistency includes "off-screen" events that don't contradict the book.
+        Contradictions include: wrong dates, wrong locations, or actions that violate book facts.
         
-        CRITICAL: Do not make excuses for the claim. If it gets a detail wrong, it is FALSE (0).
-        
-        Output format:
-        REASONING: [Step-by-step comparison of Claim vs Evidence]
+        Output:
         VERDICT: [0 or 1]
-        RATIONALE: [Concise final explanation]
+        RATIONALE: [Short explanation]
         """
         
         response = self.llm.complete(prompt)
         
         # Parse response
-        prediction = 1 # Default to consistent
-        rationale = "Parser failed, assumed consistent."
+        prediction = 1 
+        rationale = response
         
         try:
-            # Robust parsing for multi-line reasoning
-            lines = response.split('\n')
-            for line in lines:
-                clean_line = line.strip()
-                if clean_line.startswith("VERDICT:"):
-                    val = clean_line.split("VERDICT:")[1].strip()
+            for line in response.split('\n'):
+                if "VERDICT:" in line:
+                    val = line.split("VERDICT:")[1].strip()
                     prediction = int(val) if val.isdigit() else 1
-                if clean_line.startswith("RATIONALE:"):
-                    rationale = clean_line.split("RATIONALE:")[1].strip()
-            
-            if rationale == "Parser failed, assumed consistent." and "REASONING:" in response:
-                 rationale = "See reasoning."
-                 
-        except Exception as e:
-            rationale = f"Error parsing response: {e}"
+                if "RATIONALE:" in line:
+                    rationale = line.split("RATIONALE:")[1].strip()
+        except:
+            pass
             
         return prediction, rationale
 
