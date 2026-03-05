@@ -70,6 +70,7 @@ class Reasoner:
 
         if getattr(self, 'has_embedder', False):
             book_hash = hash(book_text[:1000]) # Hash first 1k chars to ID the book version
+            print(f"DEBUG: Book hash: {book_hash}")
             
             if book_hash not in self.book_embeddings_cache:
                 print(f"Embedding book chunks ({len(chunks)})...")
