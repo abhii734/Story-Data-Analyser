@@ -1,0 +1,5 @@
+pathway
+openai
+pandas
+python-dotenv
+google-generativeai

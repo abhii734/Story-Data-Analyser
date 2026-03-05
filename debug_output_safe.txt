@@ -1,0 +1,10 @@
+Initializing Debug Check...
+Ingesting books from: ./data\books
+Ingesting CSV: ./data\train.csv
+Deep analyzing 2 contradictions...
+
+=== DEBUGGING ID 137 ===
+Claim: Suspected again in 1815, he was re-arrested and shipped to the Château d’If, this time for life.
+sentence-transformers not installed. Falling back to keyword only.
+
+[Retrieved 2 chunks]
