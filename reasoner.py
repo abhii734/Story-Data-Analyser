@@ -27,7 +27,7 @@ class Reasoner:
         except Exception as e:
             print(f"Error saving cache: {e}")
 
-    def retrieve_context(self, query, book_text, limit=6):
+    def retrieve_context(self, query, book_text, limit=4):
         """
         Hybrid context retrieval: 
         Combination of Semantic Search (Embeddings) and Entity/Keyword matching.
@@ -69,8 +69,9 @@ class Reasoner:
                  self.has_embedder = False
 
         if getattr(self, 'has_embedder', False):
-            book_hash = hash(book_text[:1000]) # Hash first 1k chars to ID the book version
-            print(f"DEBUG: Book hash: {book_hash}")
+            # Better hashing for book content
+            import hashlib
+            book_hash = hashlib.md5(book_text.encode()).hexdigest()
             
             if book_hash not in self.book_embeddings_cache:
                 print(f"Embedding book chunks ({len(chunks)})...")
@@ -137,24 +138,16 @@ class Reasoner:
         
         # 1. Retrieve Context - Ensure we don't send too much
         context_chunks = self.retrieve_context(content, book_text)
-        context_str = "\n---\n".join(context_chunks) if context_chunks else "No specific book text content found."
+        context_str = "\n---\n".join(context_chunks) if context_chunks else "No book text found."
 
         # 2. Simplified prompt to reduce token count
-        prompt = f"""
-        Book: {book_name} | Character: {character}
-        Claim: "{content}"
-        
-        Context Evidence:
-        {context_str}
-        
-        Task: Is the claim CONSISTENT (1) or CONTRADICTORY (0) with the book?
-        Consistency includes "off-screen" events that don't contradict the book.
-        Contradictions include: wrong dates, wrong locations, or actions that violate book facts.
-        
-        Output:
-        VERDICT: [0 or 1]
-        RATIONALE: [Short explanation]
-        """
+        prompt = f"""Is this claim consistent with the book?
+Book: {book_name}
+Claim: {content}
+Evidence: {context_str}
+Reply only with:
+VERDICT: [1 or 0]
+RATIONALE: [One sentence]"""
         
         response = self.llm.complete(prompt)
         
